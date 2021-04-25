@@ -53,19 +53,6 @@ A workspace is a directory of files related to the processing of one
 vector graphics file.  Workspace operations will create or update
 the content of the workspace directory.
 
-Workspace operations are command line utilities.
-
-```
-# Create a workspace with dxf_file and given standard
-# currently only "WDA" is the only acceptable standard.
-$ vegas_ws_create  ws_dir dxf_file standard	#
-$ vegas_ws_detect  ws_dir
-```
-
-Note:
-- vegas_ws_create = beaver_analyze_dxf
-- vegas_ws_detect = beaver_process_dxf
-
 ## Workspace Directory Layout
 
 ```
@@ -73,7 +60,7 @@ ws_dir
   |-- standard.json
   |-- graphics.json
   |-- annotation.json
-  |-- detection.json
+  |-- objects.json
   |-- loader-specific files特定于loader的文件
   |-- standard-specific files特定于standard的文件
 ```
@@ -151,12 +138,16 @@ ws_dir
 }
 
 ```
-- detection.json
+- objects.json
 
 对象提取结果
 
 ```
 {
+  'status': {
+  		'code': 0, # 0表示成功，否则是失败号码
+		'message': 错误消息
+   }
   'objects': [
   	{
 		'class': 号码， # 范围和名字由standard 的object_classes决定
@@ -170,3 +161,23 @@ ws_dir
 }
 
 ```
+Workspace operations are command line utilities.
+
+
+```
+# Create a workspace with dxf_file and given standard
+# currently only "WDA" is the only acceptable standard.
+$ vegas_ws_create  ws_dir dxf_file standard	#
+# 在ws_dir下生成文件
+# - standard.json
+# - graphics.json
+# - annotation.json
+# - objects.json
+$ vegas_ws_detect  ws_dir
+# 更新objects.json
+```
+
+Note:
+- vegas_ws_create = beaver_analyze_dxf
+- vegas_ws_detect = beaver_process_dxf
+
