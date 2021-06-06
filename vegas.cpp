@@ -63,9 +63,11 @@ namespace vegas {
     Box bound (Document const &doc) {
         Box b;
         for (auto const &l: doc.layers) {
-            for (auto const &ll: l.lines) {
-                b.extend(ll[0]);
-                b.extend(ll[1]);
+            for (auto const &s: l.shapes) {
+                for (auto const &ll: s.lines) {
+                    b.extend(ll[0]);
+                    b.extend(ll[1]);
+                }
             }
         }
         return b;
@@ -77,7 +79,8 @@ namespace vegas {
         for (int i = 0; i < doc.layers.size(); ++i) {
             if ((pick_layer >= 0) && (i != pick_layer)) continue;
             auto const &layer = doc.layers[i];
-            for (auto const &line: layer.lines) {
+            for (auto const &shape: layer.shapes) {
+            for (auto const &line: shape.lines) {
                 Box r = Box(line[0], cc_relax) | Box(line[1], cc_relax);
                 int j = 0;
                 while (j < rects.size()) {
@@ -92,7 +95,7 @@ namespace vegas {
                     }
                 }
                 rects.push_back(r);
-            }
+            }}
         }
         for (;;) {
             int i = 0;

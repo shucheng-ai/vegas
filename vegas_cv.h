@@ -102,9 +102,9 @@ namespace vegas {
         }
 
         void draw (Layer const &layer, cv::Scalar const &color = cv::Scalar(1), int thickness=1) {
-            for (auto const &l: layer.lines) {
+            for (auto const &shape: layer.shapes)
+            for (auto const &l: shape.lines)
                 draw(l, color, thickness);
-            }
         }
 
         void draw (Document const &cad, cv::Scalar const &color = cv::Scalar(1), int thickness = 1) {

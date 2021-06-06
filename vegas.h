@@ -3,14 +3,18 @@
 #include <array>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <fstream>
 #include <limits>
-#include <fmt/core.h>
+#include <functional>
+#define FMT_HEADER_ONLY
+#include <fmt/format.h>
 #include <cereal/cereal.hpp>
 #include <cereal/types/array.hpp>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
+#include <cereal/types/map.hpp>
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 #include <pybind11/pybind11.h>
@@ -23,8 +27,10 @@ namespace vegas {
     using std::array;
     using std::vector;
     using std::map;
+    using std::unordered_map;
     using std::string;
     using std::make_pair;
+    using std::function;
 
     // The linear space of 2-D points
     typedef array<double, 2> Point;
@@ -89,6 +95,10 @@ namespace vegas {
         double height () const {
             return std::max((*this)[1][1] - (*this)[0][1], 0.0);
         }
+        
+        double area () const {
+            return width() * height();
+        }
 
         bool empty () const {
             if ((*this)[0][0] >= (*this)[1][0]) return true;
@@ -96,7 +106,7 @@ namespace vegas {
             return false;
         }
 
-        void extend (Point p) {
+        void extend (Point const &p) {
             (*this)[0][0] = std::min((*this)[0][0], p[0]);
             (*this)[0][1] = std::min((*this)[0][1], p[1]);
             (*this)[1][0] = std::max((*this)[1][0], p[0]);
@@ -147,16 +157,41 @@ namespace vegas {
         return c;
     }
 
+    struct Markup {
+        int code;
+        Polygon shape;
+
+        template <class Archive>
+        void serialize (Archive &ar)
+        {
+            ar(CEREAL_NVP(code), CEREAL_NVP(shape));
+        }
+    };
+
+    struct Shape {
+        int code;               // type of shape
+        vector<Line> lines;     // all elements are converted
+                                // to line segments
+        template <class Archive>
+        void serialize (Archive &ar)
+        {
+            ar(code);
+            ar(lines);
+        }
+    };
+
+
     struct Layer {
         string name;
-        vector<Line> lines; // all elements are converted
-                            // to line segments
+        vector<Shape> shapes; 
+        vector<Markup> markups;
 
         template <class Archive>
         void serialize (Archive &ar)
         {
             ar(name);
-            ar(lines);
+            ar(shapes);
+            ar(markups);
         }
     };
 
@@ -181,26 +216,12 @@ namespace vegas {
             cereal::BinaryOutputArchive archive(os);
             archive(*this);
         }
-
-    };
-
-
-    struct Markup {
-        int code;
-        int layer;          // -1: applicable to all layers
-                            // otherwise applicable to specific layer
-        Polygon shape;
-
-        template <class Archive>
-        void serialize (Archive &ar)
-        {
-            ar(CEREAL_NVP(code), CEREAL_NVP(layer), CEREAL_NVP(shape));
-        }
     };
 
     struct Annotation {
         vector<int> labels;     // layer labels
-        vector<Markup> markups;
+        map<int, vector<Markup>> markups;   // by label
+                                            // -1: applicable to all labels
 
         template <class Archive>
         void serialize (Archive &ar)
@@ -218,6 +239,36 @@ namespace vegas {
             std::ofstream os(path);
             cereal::JSONOutputArchive archive(os);
             archive(*this);
+        }
+
+        void reorganize (Document *doc) const {
+            CHECK(labels.size() == doc->layers.size());
+            int max_label = labels[0];
+            for (int l: labels) {
+                CHECK(l >= 0);
+                if (l > max_label) {
+                    max_label = l;
+                }
+            }
+            vector<Layer> layers(max_label+1);
+            for (int i = 0; i < doc->layers.size(); ++i) {
+                auto const &from = doc->layers[i].shapes;
+                auto &to = layers[labels[i]].shapes;
+                to.insert(to.end(), from.begin(), from.end());
+            }
+            for (auto p: markups) {
+                if (p.first >= 0) {
+                    auto &v = layers[p.first].markups;
+                    v.insert(v.end(), p.second.begin(), p.second.end());
+                }
+                else {
+                    for (auto &l: layers) {
+                        auto &v = l.markups;
+                        v.insert(v.end(), p.second.begin(), p.second.end());
+                    }
+                }
+            }
+            doc->layers.swap(layers);
         }
     };
 
@@ -242,11 +293,13 @@ namespace vegas {
         }
 
         void add (double x1, double y1, double x2, double y2) {
+            /*
             CHECK(current >= 0);
             Line line;
             line[0] = Point{x1, y1};
             line[1] = Point{x2, y2};
             layers[current].lines.push_back(line);
+            */
         }
     };
 
@@ -270,6 +323,10 @@ namespace vegas {
         return std::sqrt(dot(p, p));
     }
 
+    static inline double norm (Line const &l) {
+        return norm(l[1] - l[0]);
+    }
+
     static inline double distance (Point const &p1, Point const &p2) {
         return norm(p2 - p1);
     }
@@ -289,9 +346,47 @@ namespace vegas {
 
     void extract_cc (Document const &doc, vector<Box> *bb, double cc_relax, int pick_layer = -1);
 
-    class Extractor {
+    template <typename T>
+    class Factory {
+    public:
+        typedef map<string, function<T *(py::dict &)>> Registry;
+        static Registry &registry () {
+            static Registry impl;
+            return impl;
+        }
+        static T *create (py::dict config) {
+            string type = config["name"].cast<string>();
+            auto &r = registry();
+            auto it = r.find(type);
+            if (it == r.end()) {
+                std::cerr << type << " not found." << std::endl;
+                CHECK(false);
+            }
+			return it->second(config);
+        }
+    };
+
+	template <typename T>
+	class Register {
+    public:
+        Register (string const &name) {
+            T::registry()[name] = [](py::dict conf){ return new T(conf);};
+        }
+	};
+
+#define REGISTER(cls)   Register<cls> register_##cls(#cls)
+
+    class Extractor: public Factory<Extractor> {
     public:
         virtual size_t dim () const = 0;
-        virtual void apply (Layer const &layer, double *ft) = 0;
+        virtual void apply (Layer const &, double *ft) const = 0;
+        virtual ~Extractor () {}
+    };
+
+    class Detector: public Factory<Detector> {
+    public:
+        virtual void detect (Layer const &layer, vector<Object> *) const = 0;
+        virtual ~Detector () {}
     };
 }
+
