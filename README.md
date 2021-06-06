@@ -57,6 +57,7 @@ the content of the workspace directory.
 
 ```
 ws_dir
+  |-- document.vegas
   |-- standard.json
   |-- graphics.json
   |-- annotation.json
