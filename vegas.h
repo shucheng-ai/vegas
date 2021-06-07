@@ -14,7 +14,6 @@
 #include <cereal/types/array.hpp>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
-#include <cereal/types/map.hpp>
 #include <cereal/archives/binary.hpp>
 #include <cereal/archives/json.hpp>
 #include <pybind11/pybind11.h>
@@ -64,16 +63,53 @@ namespace vegas {
 
     struct Box: public array<Point, 2> {
 
+        void relax (double r) {
+            (*this)[0][0] -= r;
+            (*this)[0][1] -= r;
+            (*this)[1][0] += r;
+            (*this)[1][1] += r;
+        }
+
         Box () {
             (*this)[0][0] = (*this)[0][1] = std::numeric_limits<double>::max();
             (*this)[1][0] = (*this)[1][1] = std::numeric_limits<double>::min();
         }
 
-        Box (Point const &p, double relax) {
-            (*this)[0][0] = p[0] - relax;
-            (*this)[0][1] = p[1] - relax;
-            (*this)[1][0] = p[0] + relax;
-            (*this)[1][1] = p[1] + relax;
+        Box (Point const &p, double relax = 0) {
+            at(0) = p;
+            at(1) = p;
+            this->relax(relax);
+        }
+
+        Box (Point const &p1, Point const &p2, double relax = 0) {
+            std::tie(at(0)[0], at(1)[0]) = std::minmax(p1[0], p2[0]);
+            std::tie(at(0)[1], at(1)[1]) = std::minmax(p1[1], p2[1]);
+            this->relax(relax);
+        }
+
+        Box (Polygon const &p): Box(p[0], p[2], 0) {
+            // p must contain 3 points
+            // forming an upright box
+            // 多边形必须是一个没有旋转过的矩形
+            // 顺时针逆时针无所谓
+            CHECK(p.size() == 4);
+            if (p[0][0] == p[1][0]) {
+                // p0 -- p1
+                // |     |
+                // p3 -- p2
+                CHECK(p[2][0] == p[3][0]);
+                CHECK(p[0][1] == p[3][1]);
+                CHECK(p[1][1] == p[2][1]);
+            }
+            else {
+                // p0 -- p3
+                // |     |
+                // p1 -- p2
+                CHECK(p[0][0] == p[3][0]);
+                CHECK(p[1][0] == p[2][0]);
+                CHECK(p[0][1] == p[1][1]);
+                CHECK(p[2][1] == p[3][1]);
+            }
         }
 
         Point center () const {
@@ -157,17 +193,6 @@ namespace vegas {
         return c;
     }
 
-    struct Markup {
-        int code;
-        Polygon shape;
-
-        template <class Archive>
-        void serialize (Archive &ar)
-        {
-            ar(CEREAL_NVP(code), CEREAL_NVP(shape));
-        }
-    };
-
     struct Shape {
         int code;               // type of shape
         vector<Line> lines;     // all elements are converted
@@ -184,14 +209,12 @@ namespace vegas {
     struct Layer {
         string name;
         vector<Shape> shapes; 
-        vector<Markup> markups;
 
         template <class Archive>
         void serialize (Archive &ar)
         {
             ar(name);
             ar(shapes);
-            ar(markups);
         }
     };
 
@@ -218,10 +241,28 @@ namespace vegas {
         }
     };
 
+    struct Markup {
+        enum {
+            CODE_ROI = 0;
+            CODE_CLEAR;
+            CODE_OBJECT;                // value = category
+            CODE_OBJECT_BB;             // value = category
+        }
+        int code;
+        int layer = -1;                 // -1: applicable to all layers
+        int label = -1;
+        Polygon shape;
+
+        template <class Archive>
+        void serialize (Archive &ar)
+        {
+            ar(CEREAL_NVP(code), CEREAL_NVP(layer), CEREAL_NVP(value), CEREAL_NVP(shape));
+        }
+    };
+
     struct Annotation {
-        vector<int> labels;     // layer labels
-        map<int, vector<Markup>> markups;   // by label
-                                            // -1: applicable to all labels
+        vector<int> labels;         // layer labels
+        vector<Markup> markups;     // by label
 
         template <class Archive>
         void serialize (Archive &ar)
@@ -241,6 +282,7 @@ namespace vegas {
             archive(*this);
         }
 
+        /*
         void reorganize (Document *doc) const {
             CHECK(labels.size() == doc->layers.size());
             int max_label = labels[0];
@@ -270,6 +312,7 @@ namespace vegas {
             }
             doc->layers.swap(layers);
         }
+        */
     };
 
     class DocumentLoader: public Document {
@@ -318,6 +361,11 @@ namespace vegas {
     static inline double dot (Point const &p1, Point const &p2) {
         return p1[0] * p2[0] + p1[1] * p2[1];
     }
+
+    static inline double det (Point const &p1, Point const &p2) {
+        // det([p1; p2] as matrix)
+        return p1[0] * p2[1] - p1[1] * p2[0];
+    }
     
     static inline double norm (Point const &p) {
         return std::sqrt(dot(p, p));
@@ -342,6 +390,18 @@ namespace vegas {
         double a = norm(x);
         double b = dot(dir, x);
         return std::sqrt(a * a - b * b);
+    }
+
+    static inline Point intersect (Line const &a, Line const &b) {
+        Point da = a[1] - a[0];
+        Point db = b[1] - b[0];
+        double u = det(a[0], da);
+        double v = det(b[0], db);
+        double bottom = det(db, da);
+        CHECK(std::abs(bottom) > 1);
+        double x = (u * db[0] - v * da[0]) / bottom;
+        double y = (u * db[1] - v * da[1]) / bottom;
+        return Point{x, y};
     }
 
     void extract_cc (Document const &doc, vector<Box> *bb, double cc_relax, int pick_layer = -1);
@@ -385,7 +445,7 @@ namespace vegas {
 
     class Detector: public Factory<Detector> {
     public:
-        virtual void detect (Layer const &layer, vector<Object> *) const = 0;
+        virtual void detect (const &layer, vector<Object> *) const = 0;
         virtual ~Detector () {}
     };
 }
