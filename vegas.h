@@ -46,6 +46,14 @@ namespace vegas {
         return Point{p1[0] - p2[0], p1[1] - p2[1]};
     }
 
+    static inline Point operator + (Point const &p1, double v) {
+        return Point{p1[0] + v, p1[1] + v};
+    }
+
+    static inline Point operator - (Point const &p1, double v) {
+        return Point{p1[0] - v, p1[1] - v};
+    }
+
     static inline Point operator * (Point const &p1, double v) {
         return Point{p1[0] * v, p1[1] * v};
     }
@@ -63,16 +71,9 @@ namespace vegas {
 
     struct Box: public array<Point, 2> {
 
-        void relax (double r) {
-            (*this)[0][0] -= r;
-            (*this)[0][1] -= r;
-            (*this)[1][0] += r;
-            (*this)[1][1] += r;
-        }
-
         Box () {
             (*this)[0][0] = (*this)[0][1] = std::numeric_limits<double>::max();
-            (*this)[1][0] = (*this)[1][1] = std::numeric_limits<double>::min();
+            (*this)[1][0] = (*this)[1][1] = -std::numeric_limits<double>::max();
         }
 
         Box (Point const &p, double relax = 0) {
@@ -88,6 +89,7 @@ namespace vegas {
         }
 
         Box (Polygon const &p): Box(p[0], p[2], 0) {
+            // 输入的p必须是顺时针或者逆时针的直立矩形
             // p must contain 3 points
             // forming an upright box
             // 多边形必须是一个没有旋转过的矩形
@@ -111,6 +113,14 @@ namespace vegas {
                 CHECK(p[2][1] == p[3][1]);
             }
         }
+
+        void relax (double r) {
+            (*this)[0][0] -= r;
+            (*this)[0][1] -= r;
+            (*this)[1][0] += r;
+            (*this)[1][1] += r;
+        }
+
 
         Point center () const {
             return ((*this)[0] + (*this)[1]) / 2;
@@ -195,6 +205,8 @@ namespace vegas {
 
     struct Shape {
         int code;               // type of shape
+                                // code含义C++层面不管
+                                // 上层保证0..n-1连续
         vector<Line> lines;     // all elements are converted
                                 // to line segments
         template <class Archive>
@@ -235,28 +247,65 @@ namespace vegas {
         }
 
         void save (string const &path) {
+            LOG(INFO) << "saving " << layers.size() << " layers.";
+
             std::ofstream os(path, std::ios::binary);
             cereal::BinaryOutputArchive archive(os);
             archive(*this);
+        }
+
+        int size () const {
+            return layers.size();
+        }
+
+        string layerName (int l) const {
+            return layers[l].name;
+        }
+
+        void renderLayer (py::object cvs, int layer) const {
+            auto draw_line = cvs.attr("line");
+            for (auto const &shape: layers[layer].shapes) {
+                for (auto const &line: shape.lines) {
+                    py::list p1, p2;
+                    p1.append(line[0][0]);
+                    p1.append(line[0][1]);
+                    p2.append(line[1][0]);
+                    p2.append(line[1][1]);
+                    draw_line(p1, p2);
+                }
+            }
+        }
+
+        void render (py::object cvs, int layer) const {
+            if (layer >= 0) {
+                renderLayer(cvs, layer);
+            }
+            else {
+                for (int i = 0; i < layers.size(); ++i) {
+                    renderLayer(cvs, i);
+                }
+            }
         }
     };
 
     struct Markup {
         enum {
-            CODE_ROI = 0;
-            CODE_CLEAR;
-            CODE_OBJECT;                // value = category
-            CODE_OBJECT_BB;             // value = category
-        }
+            CODE_ROI = 0,
+            CODE_CLEAR,
+            CODE_OBJECT_CONTOUR,        // value = category
+            CODE_OBJECT_BBOX            // value = category
+            // CONTOUR严格紧贴对象
+            // BBOX会超出对象边界
+        };
         int code;
         int layer = -1;                 // -1: applicable to all layers
-        int label = -1;
+        int label = -1;                 // label含义由code决定
         Polygon shape;
 
         template <class Archive>
         void serialize (Archive &ar)
         {
-            ar(CEREAL_NVP(code), CEREAL_NVP(layer), CEREAL_NVP(value), CEREAL_NVP(shape));
+            ar(CEREAL_NVP(code), CEREAL_NVP(layer), CEREAL_NVP(label), CEREAL_NVP(shape));
         }
     };
 
@@ -273,53 +322,26 @@ namespace vegas {
         void load_json (string const &path) {
             std::ifstream is(path);
             cereal::JSONInputArchive archive(is);
-            archive(*this);
+            serialize(archive);
         }
 
         void save_json (string const &path) {
             std::ofstream os(path);
             cereal::JSONOutputArchive archive(os);
-            archive(*this);
+            serialize(archive);
         }
-
-        /*
-        void reorganize (Document *doc) const {
-            CHECK(labels.size() == doc->layers.size());
-            int max_label = labels[0];
-            for (int l: labels) {
-                CHECK(l >= 0);
-                if (l > max_label) {
-                    max_label = l;
-                }
-            }
-            vector<Layer> layers(max_label+1);
-            for (int i = 0; i < doc->layers.size(); ++i) {
-                auto const &from = doc->layers[i].shapes;
-                auto &to = layers[labels[i]].shapes;
-                to.insert(to.end(), from.begin(), from.end());
-            }
-            for (auto p: markups) {
-                if (p.first >= 0) {
-                    auto &v = layers[p.first].markups;
-                    v.insert(v.end(), p.second.begin(), p.second.end());
-                }
-                else {
-                    for (auto &l: layers) {
-                        auto &v = l.markups;
-                        v.insert(v.end(), p.second.begin(), p.second.end());
-                    }
-                }
-            }
-            doc->layers.swap(layers);
-        }
-        */
     };
 
     class DocumentLoader: public Document {
         // work with vegas.DocumentLoadingCanvas
-        vector<Layer> layers;
         map<string, int> lookup;
         int current;
+
+        Point cast (py::object list) {
+            double x = list[py::cast(0)].cast<double>();
+            double y = list[py::cast(1)].cast<double>();
+            return Point{x, y};
+        }
     public:
         DocumentLoader (): current(-1) {
         }
@@ -335,14 +357,19 @@ namespace vegas {
             current = r.first->second;
         }
 
-        void add (double x1, double y1, double x2, double y2) {
-            /*
-            CHECK(current >= 0);
-            Line line;
-            line[0] = Point{x1, y1};
-            line[1] = Point{x2, y2};
-            layers[current].lines.push_back(line);
-            */
+        void add (int code, py::object list, bool closed) {
+            layers[current].shapes.emplace_back();
+            Shape &shape = layers[current].shapes.back();
+            shape.code = code;
+            int n = py::len(list);
+            int l = n - 1;
+            if (closed) l += 1;
+            Point from = cast(list[py::cast(0)]);
+            for (int i = 1; i <= l; ++i) {
+                Point to = cast(list[py::cast(i % n)]);
+                shape.lines.push_back(Line{from, to});
+                from = to;
+            }
         }
     };
 
@@ -445,7 +472,7 @@ namespace vegas {
 
     class Detector: public Factory<Detector> {
     public:
-        virtual void detect (const &layer, vector<Object> *) const = 0;
+        virtual void detect (Layer const &, vector<Object> *) const = 0;
         virtual ~Detector () {}
     };
 }
