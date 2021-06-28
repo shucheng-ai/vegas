@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from vegas_core import Box
+from .vegas_core import Box
 import numpy as np
 import cv2
 

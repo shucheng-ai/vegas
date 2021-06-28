@@ -73,55 +73,63 @@ namespace vegas {
         return b;
     }
 
+
+    void View::collect (vector<Line> *lines) const {
+        vector<Box> roi;
+        vector<Box> remove;
+        collect_markup_boxes(&roi, Markup::CODE_ROI);
+        collect_markup_boxes(&remove, Markup::CODE_REMOVE);
+        for (Layer const *l: layers) {
+            for (auto const &shape: l->shapes) {
+                bool keep = true;
+                if (roi.size()) {
+                    keep = false;
+                    for (auto const &b: roi) {
+                        if (b.contains(shape)) {
+                            keep = true;
+                            break;
+                        }
+                    }
+                }
+                for (auto const &b: remove) {
+                    if (b.contains(shape)) {
+                        keep = false;
+                        break;
+                    }
+                }
+                if (!keep) continue;
+                lines->insert(lines->end(), shape.lines.begin(), shape.lines.end());
+            }
+        }
+    }
+    
+    void View::collect_markup_objects (Detection *det) const {
+        for (Markup const *m: markups) {
+            if (m->code == Markup::CODE_OBJECT_CONTOUR) {
+                CHECK(m->label >= 0);
+                det->objects.emplace_back();
+                auto &obj = det->objects.back();
+                obj.label = label;
+                obj.contour = m->shape;
+                obj.bbox = bound(obj.contour);
+            }
+        }
+    }
+
     void extract_cc (Document const &doc, vector<Box> *bb, double cc_relax, int pick_layer) {
         // if pick_layers >= 0, only use this layer
+		ConnectedComponents cc(cc_relax);
         vector<Box> rects;
         for (int i = 0; i < doc.layers.size(); ++i) {
             if ((pick_layer >= 0) && (i != pick_layer)) continue;
             auto const &layer = doc.layers[i];
             for (auto const &shape: layer.shapes) {
             for (auto const &line: shape.lines) {
-                Box r = Box(line[0], cc_relax) | Box(line[1], cc_relax);
-                int j = 0;
-                while (j < rects.size()) {
-                    auto one = rects[j];
-                    if (!(one & r).empty()) {
-                        r = r | one;
-                        rects[j] = rects.back();
-                        rects.pop_back();
-                    }
-                    else {
-                        ++j;
-                    }
-                }
-                rects.push_back(r);
-            }}
-        }
-        for (;;) {
-            int i = 0;
-            int cc = 0;
-            while (i < rects.size()) {
-                auto &r = rects[i];
-                int j = i+1;
-                while (j < rects.size()) {
-                    auto one = rects[j];
-                    if (!(one & r).empty()) {
-                        r = r | one;
-                        rects[j] = rects.back();
-                        rects.pop_back();
-                        ++cc;
-                    }
-                    else {
-                        ++j;
-                    }
-                }
-                ++i;
-            }
-            if (cc == 0) break;
-        }
-        bb->swap(rects);
-    }
-
-
+				cc.add(line);
+			}}
+		}
+		cc.cleanup();
+		cc.swap(bb);
+	}
 
 }

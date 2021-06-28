@@ -31,6 +31,14 @@ namespace vegas {
     using std::make_pair;
     using std::function;
 
+    template <typename T>
+    T get (py::dict dict, char const *name, T const &v) {
+        if (dict.contains(name)) {
+            return dict[name].cast<T>();
+        }
+        return v;
+    }   
+
     // The linear space of 2-D points
     typedef array<double, 2> Point;
 
@@ -68,6 +76,20 @@ namespace vegas {
 
     double area (Polygon const &, double scale = 1.0);
     void intersect (Polygon const &, Polygon const &, Polygon *);
+
+    struct Shape {
+        int code;               // type of shape
+                                // code含义C++层面不管
+                                // 上层保证0..n-1连续
+        vector<Line> lines;     // all elements are converted
+                                // to line segments
+        template <class Archive>
+        void serialize (Archive &ar)
+        {
+            ar(code);
+            ar(lines);
+        }
+    };
 
     struct Box: public array<Point, 2> {
 
@@ -126,7 +148,7 @@ namespace vegas {
             return ((*this)[0] + (*this)[1]) / 2;
         }
 
-        void contour (Polygon *c) {
+        void contour (Polygon *c) const {
             c->clear();
             c->push_back(at(0));
             c->push_back(Point{at(1)[0], at(0)[1]});
@@ -183,6 +205,25 @@ namespace vegas {
             v.append((*this)[1][1]);
             return v;
         }
+
+        bool contains (Point const &p) const {
+            return (p[0] >= at(0)[0]) &&
+                   (p[0] <= at(1)[0]) &&
+                   (p[1] >= at(0)[1]) &&
+                   (p[1] <= at(1)[1]);
+        }
+
+        bool contains (Line const &l) const {
+            return contains(l[0]) && contains(l[1]);
+        }
+
+        bool contains (Shape const &sh) const {
+            for (auto const &l: sh.lines) {
+                if (!contains(l[0])) return false;
+                if (!contains(l[1])) return false;
+            }
+            return true;
+        }
     };
 
     static inline Box operator | (Box const &a, Box const &b) {
@@ -202,21 +243,6 @@ namespace vegas {
         c[1][1] = std::min(a[1][1], b[1][1]);
         return c;
     }
-
-    struct Shape {
-        int code;               // type of shape
-                                // code含义C++层面不管
-                                // 上层保证0..n-1连续
-        vector<Line> lines;     // all elements are converted
-                                // to line segments
-        template <class Archive>
-        void serialize (Archive &ar)
-        {
-            ar(code);
-            ar(lines);
-        }
-    };
-
 
     struct Layer {
         string name;
@@ -290,23 +316,36 @@ namespace vegas {
 
     struct Markup {
         enum {
-            CODE_ROI = 0,
-            CODE_CLEAR,
-            CODE_OBJECT_CONTOUR,        // value = category
-            CODE_OBJECT_BBOX            // value = category
+            CODE_ROI = 0,               // must be rect
+            CODE_REMOVE,                // must be rect
+            CODE_CONNECT,
+            CODE_OBJECT_CONTOUR,        // 必须有label
+            //CODE_OBJECT_BBOX            // 必须有label, must be rect
             // CONTOUR严格紧贴对象
             // BBOX会超出对象边界
         };
         int code;
-        int layer = -1;                 // -1: applicable to all layers
-        int label = -1;                 // label含义由code决定
+        int label = -1;                 // 和layer的label是一致的
+                                        // 如果label == -1则应用于所有label
         Polygon shape;
 
         template <class Archive>
         void serialize (Archive &ar)
         {
-            ar(CEREAL_NVP(code), CEREAL_NVP(layer), CEREAL_NVP(label), CEREAL_NVP(shape));
+            ar(CEREAL_NVP(code), CEREAL_NVP(label), CEREAL_NVP(shape));
         }
+    };
+
+    // for object recognition
+    struct Object {
+        int label = -1;
+        Box bbox;
+        Polygon contour;
+    };
+
+
+    struct Detection {
+        vector<Object> objects;
     };
 
     struct Annotation {
@@ -375,13 +414,6 @@ namespace vegas {
 
     Box bound (Document const &);
     Box bound (Polygon const &);
-
-    // for object recognition
-    struct Object {
-        int label = -1;
-        Box bbox;
-        Polygon contour;
-    };
 
 
     // 几何运算
@@ -470,10 +502,93 @@ namespace vegas {
         virtual ~Extractor () {}
     };
 
+    struct View {
+        int label;
+        vector<Layer const *> layers;
+        vector<Markup const *> markups;
+        View (Document const &doc, Annotation const &anno, int label_): label(label_) {
+            CHECK(anno.labels.size() == doc.layers.size());
+            for (unsigned i = 0; i < anno.labels.size(); ++i) {
+                if (anno.labels[i] == label) {
+                    layers.push_back(&doc.layers[i]);
+                }
+            }
+            for (auto const &markup: anno.markups) {
+                if (markup.label == -1 || markup.label == label) {
+                    markups.push_back(&markup);
+                }
+            }
+        }
+
+        void collect (vector<Line> *) const;
+        void collect_markup_objects (Detection *) const;
+        void collect_markup_boxes (vector<Box> *boxes, int code) const {
+            for (Markup const *m: markups) {
+                if (m->code == code) {
+                    boxes->emplace_back(m->shape);
+                }
+            }
+        }
+    };
+
     class Detector: public Factory<Detector> {
     public:
-        virtual void detect (Layer const &, vector<Object> *) const = 0;
+        virtual void detect (View const &, Detection *) const = 0;
         virtual ~Detector () {}
     };
+
+    class ConnectedComponents {
+        double relax;
+        vector<Box> boxes;
+    public:
+        ConnectedComponents (double relax_): relax(relax_) {
+        }
+
+        void add (Line const &line) {
+            Box r = Box(line[0], line[1], relax);
+            int j = 0;
+            while (j < boxes.size()) {
+                auto one = boxes[j];
+                if (!(one & r).empty()) {
+                    r = r | one;
+                    boxes[j] = boxes.back();
+                    boxes.pop_back();
+                }
+                else {
+                    ++j;
+                }
+            }
+            boxes.push_back(r);
+        }
+        void cleanup () {
+            for (;;) {
+                int i = 0;
+                int cc = 0;
+                while (i < boxes.size()) {
+                    auto &r = boxes[i];
+                    int j = i+1;
+                    while (j < boxes.size()) {
+                        auto one = boxes[j];
+                        if (!(one & r).empty()) {
+                            r = r | one;
+                            boxes[j] = boxes.back();
+                            boxes.pop_back();
+                            ++cc;
+                        }
+                        else {
+                            ++j;
+                        }
+                    }
+                    ++i;
+                }
+                if (cc == 0) break;
+            }
+        }
+
+        void swap (vector<Box> *bb) {
+            bb->swap(boxes);
+        }
+    };
+
 }
 

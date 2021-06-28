@@ -5,7 +5,7 @@
 
 #include "matrix.h"
 
-namespace py = pybind11;
+//namespace py = pybind11;
 
 // type caster: Matrix <-> NumPy-array
 namespace pybind11 { namespace detail {
@@ -16,12 +16,12 @@ namespace pybind11 { namespace detail {
       PYBIND11_TYPE_CASTER(Matrix<T>, _("Matrix<T>"));
 
       // Conversion part 1 (Python -> C++)
-      bool load(py::handle src, bool convert)
+      bool load(handle src, bool convert)
       {
-        if (!convert && !py::array_t<T>::check_(src))
+        if (!convert && !array_t<T>::check_(src))
           return false;
 
-        auto buf = py::array_t<T, py::array::c_style | py::array::forcecast>::ensure(src);
+        auto buf = array_t<T, array::c_style | array::forcecast>::ensure(src);
         if (!buf)
           return false;
 
@@ -40,10 +40,10 @@ namespace pybind11 { namespace detail {
       }
 
       //Conversion part 2 (C++ -> Python)
-      static py::handle cast(const Matrix<T>& src,
-        py::return_value_policy policy, py::handle parent)
+      static handle cast(const Matrix<T>& src,
+        return_value_policy policy, handle parent)
       {
-        py::array a(std::move(src.shape()), std::move(src.strides(true)), src.data() );
+        array a(std::move(src.shape()), std::move(src.strides(true)), src.data() );
 
         return a.release();
       }

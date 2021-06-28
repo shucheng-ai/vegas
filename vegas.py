@@ -2,7 +2,7 @@
 import os
 import json
 import pickle
-from vegas_core import *
+from .vegas_core import *
 
 HOME = os.path.abspath(os.path.dirname(__file__))
 
@@ -92,12 +92,37 @@ class Workspace:
         xtor = get_extractor(self.standard)
         return xtor.apply(doc)
 
-    def generate_default_annotation (self):
-        X = self.extract_layer_features()
-        model = get_classifier(self.standard)
-        Y = model.predict(X)
+    def generate_default_annotation (self, detect_standard_names = False, detect_heuristic_names = False):
+        doc = self.load_document()
+        done = False
+        if detect_standard_names:
+            labels = []
+            standard_names = self.standard['standard_layer_names']
+            found = False
+            for i in range(doc.size()):
+                n = doc.layerName(i)
+                l = standard_names.get(n, 0)
+                labels.append(l)
+                if l > 0:
+                    found = True
+            if found:
+                done = True
+
+        if not done:
+            X = self.extract_layer_features()
+            model = get_classifier(self.standard)
+            classes = self.standard['layer_classes']
+            Y = model.predict(X)
+            labels = [classes[y] for y in Y]
+
+            if detect_heuristic_names:
+                for i in range(doc.size()):
+                    n = doc.layerName(i)
+                    # detect heuristic names
+                    # TODO
+
         anno = {
-                'labels': [int(x) for x in Y],
+                'labels': labels,
                 'markups': []
         }
         with open(self.get_path(ANNOTATION_FILENAME), 'w') as f:

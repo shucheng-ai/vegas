@@ -6,11 +6,13 @@
 namespace vegas {
     using std::unique_ptr;
 
-    py::list components (Document const &doc, double relax) {
+    py::list components (Document const &doc, double relax, double th) {
         vector<Box> ccs;
         extract_cc(doc, &ccs, relax);
         py::list l;
         for (auto const &b: ccs) {
+            if (b.width() < th) continue;
+            if (b.height() < th) continue;
             l.append(b.unpack());
         }
         return l;
@@ -44,6 +46,14 @@ namespace vegas {
             return fts;
         }
     };
+
+
+    void test (View const &view, py::dict conf) {
+        auto *det = Detector::create(conf);
+        Detection r;
+        det->detect(view, &r);
+        delete det;
+    }
 }
 
 
@@ -61,8 +71,12 @@ PYBIND11_MODULE(vegas_core, module)
         ;
     py::class_<Annotation>(module, "Annotation")
         .def(py::init<>())
+        .def_readonly("labels", &Annotation::labels)
         .def("load", &Annotation::load_json)
         .def("save", &Annotation::save_json)
+        ;
+    py::class_<View>(module, "View")
+        .def(py::init<Document const&, Annotation const &, int>())
         ;
     py::class_<DocumentLoader>(module, "DocumentLoader")
         .def(py::init<>())
@@ -82,5 +96,6 @@ PYBIND11_MODULE(vegas_core, module)
         ;
     module.def("bound", (Box (*)(Document const &))&bound);
     module.def("components", &components);
+    module.def("test", &test);
 }
 
